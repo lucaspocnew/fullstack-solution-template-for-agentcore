@@ -302,7 +302,13 @@ cd infra-cdk
 cdk destroy --force
 ```
 
-If you deployed via CodeBuild (Option B), its build resources are already removed on success (or on the next successful run) — only the deployed FAST stack above needs tearing down.
+If you deployed via CodeBuild (Option B), its build resources are already removed on success (or on the next successful run) — only the deployed FAST stack above needs tearing down. If you don't have CDK installed locally (the CodeBuild path doesn't require it), delete the stack directly:
+
+```bash
+aws cloudformation delete-stack --stack-name <stack_name_base>
+```
+
+Like `cdk destroy`, this removes the FAST stack but not the CDK bootstrap or asset buckets.
 
 **Warning**: `cdk destroy` will delete all data including S3 buckets created during deployment and ECR images.
 

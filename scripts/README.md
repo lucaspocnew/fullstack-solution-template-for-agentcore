@@ -63,7 +63,7 @@ python scripts/deploy-with-codebuild.py
 
 Packages your git-tracked source and runs the full deployment in the cloud via a CodeBuild project, streaming logs to your terminal. On a **successful** build, all created resources (S3 source bucket, CodeBuild project, IAM role, permission boundary) are removed. On a **failed** build, they are retained for debugging and reused on the next run.
 
-Only git-tracked or staged files are deployed — stage or commit first, as untracked files are skipped with a warning. This does not remove your deployed FAST stack; for that, run `cd infra-cdk && cdk destroy`.
+Only git-tracked or staged files are deployed — stage or commit first, as untracked files are skipped with a warning. This does not remove your deployed FAST stack; to tear that down, run `cd infra-cdk && cdk destroy`, or `aws cloudformation delete-stack --stack-name <stack_name_base>` if you don't have CDK installed locally.
 
 The IAM role has `AdministratorAccess` constrained by a permission boundary that denies dangerous actions (`iam:CreateUser`, `iam:CreateAccessKey`, `organizations:*`, etc.) to prevent privilege escalation.
 
