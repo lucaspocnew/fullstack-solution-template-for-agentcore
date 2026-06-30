@@ -20,15 +20,16 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "react-vendor": ["react", "react-dom", "react-router-dom"],
-          "ui-vendor": [
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-select",
-            "@radix-ui/react-alert-dialog",
-            "@radix-ui/react-progress",
-          ],
-          "auth-vendor": ["react-oidc-context", "aws-amplify"],
+        // Vite 8 uses the rolldown bundler, which requires manualChunks to be a
+        // function — the object form is no longer supported and fails at build.
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (/[\\/]node_modules[\\/](react|react-dom|react-router-dom)[\\/]/.test(id))
+              return "react-vendor"
+            if (id.includes("@radix-ui") || id.includes("radix-ui")) return "ui-vendor"
+            if (id.includes("react-oidc-context") || id.includes("aws-amplify"))
+              return "auth-vendor"
+          }
         },
       },
     },
