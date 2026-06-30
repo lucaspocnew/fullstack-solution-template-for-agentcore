@@ -8,8 +8,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb"
 import * as apigateway from "aws-cdk-lib/aws-apigateway"
 import * as logs from "aws-cdk-lib/aws-logs"
 import * as s3 from "aws-cdk-lib/aws-s3"
-import * as agentcore from "@aws-cdk/aws-bedrock-agentcore-alpha"
-import * as bedrockagentcore from "aws-cdk-lib/aws-bedrockagentcore"
+import * as agentcore from "aws-cdk-lib/aws-bedrockagentcore"
 import { PythonFunction } from "@aws-cdk/aws-lambda-python-alpha"
 import * as lambda from "aws-cdk-lib/aws-lambda"
 import * as ecr_assets from "aws-cdk-lib/aws-ecr-assets"
@@ -20,7 +19,7 @@ import { AgentCoreRole } from "./utils/agentcore-role"
 import * as path from "path"
 import * as fs from "fs"
 
-export interface BackendStackProps extends cdk.NestedStackProps {
+export interface BackendConstructProps {
   config: AppConfig
   userPoolId: string
   userPoolClientId: string
@@ -28,22 +27,27 @@ export interface BackendStackProps extends cdk.NestedStackProps {
   frontendUrl: string
 }
 
-export class BackendStack extends cdk.NestedStack {
+export class BackendConstruct extends Construct {
   public readonly userPoolId: string
   public readonly userPoolClientId: string
   public readonly userPoolDomain: cognito.UserPoolDomain
   public feedbackApiUrl: string
   public runtimeArn: string
   public memoryArn: string
-  private agentName: cdk.CfnParameter
+  private readonly region: string
+  private readonly account: string
   private userPool: cognito.IUserPool
   private machineClient: cognito.UserPoolClient
   private machineClientSecret: secretsmanager.Secret
   private runtimeCredentialProvider: cdk.CustomResource
   private agentRuntime: agentcore.Runtime
 
-  constructor(scope: Construct, id: string, props: BackendStackProps) {
-    super(scope, id, props)
+  constructor(scope: Construct, id: string, props: BackendConstructProps) {
+    super(scope, id)
+
+    const stack = cdk.Stack.of(this)
+    this.region = stack.region
+    this.account = stack.account
 
     // Store the Cognito values
     this.userPoolId = props.userPoolId
@@ -98,13 +102,6 @@ export class BackendStack extends cdk.NestedStack {
 
   private createAgentCoreRuntime(config: AppConfig): void {
     const pattern = config.backend?.pattern || "strands-single-agent"
-
-    // Parameters
-    this.agentName = new cdk.CfnParameter(this, "AgentName", {
-      type: "String",
-      default: "FASTAgent",
-      description: "Name for the agent runtime",
-    })
 
     const stack = cdk.Stack.of(this)
     const deploymentType = config.backend.deployment_type
@@ -268,31 +265,26 @@ export class BackendStack extends cdk.NestedStack {
 
     // Create memory resource with short-term memory (conversation history) as default
     // To enable long-term strategies (summaries, preferences, facts), see docs/MEMORY_INTEGRATION.md
-    const memory = new cdk.CfnResource(this, "AgentMemory", {
-      type: "AWS::BedrockAgentCore::Memory",
-      properties: {
-        Name: cdk.Names.uniqueResourceName(this, { maxLength: 48 }),
-        EventExpiryDuration: 30,
-        Description: `Short-term memory for ${config.stack_name_base} agent`,
-        MemoryStrategies: [
-          {
-            // Extracts and stores factual information shared by the user across sessions.
-            // Stored under /facts/{actorId} — retrieved on each turn to personalise responses.
-            SemanticMemoryStrategy: {
-              Name: "FactExtractor",
-              Namespaces: ["/facts/{actorId}"],
-            },
-          },
-        ],
-        MemoryExecutionRoleArn: agentRole.roleArn,
-        Tags: {
-          Name: `${config.stack_name_base}_Memory`,
-          ManagedBy: "CDK",
-        },
+    const memory = new agentcore.Memory(this, "AgentMemory", {
+      memoryName: cdk.Names.uniqueResourceName(this, { maxLength: 48 }),
+      expirationDuration: cdk.Duration.days(30),
+      description: `Short-term memory for ${config.stack_name_base} agent`,
+      memoryStrategies: [
+        // Extracts and stores factual information shared by the user across sessions.
+        // Stored under /facts/{actorId} — retrieved on each turn to personalise responses.
+        agentcore.MemoryStrategy.usingSemantic({
+          strategyName: "FactExtractor",
+          namespaces: ["/facts/{actorId}"],
+        }),
+      ],
+      executionRole: agentRole,
+      tags: {
+        Name: `${config.stack_name_base}_Memory`,
+        ManagedBy: "CDK",
       },
     })
-    const memoryId = memory.getAtt("MemoryId").toString()
-    const memoryArn = memory.getAtt("MemoryArn").toString()
+    const memoryId = memory.memoryId
+    const memoryArn = memory.memoryArn
 
     // Store the memory ARN for access from main stack
     this.memoryArn = memoryArn
@@ -401,7 +393,7 @@ export class BackendStack extends cdk.NestedStack {
     // from RequestContext.request_headers, which is needed to securely extract the
     // user ID from the validated JWT token (sub claim) instead of trusting the payload body.
     this.agentRuntime = new agentcore.Runtime(this, "Runtime", {
-      runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${this.agentName.valueAsString}`,
+      runtimeName: `${config.stack_name_base.replace(/-/g, "_")}_${config.backend.agent_name}`,
       agentRuntimeArtifact: agentRuntimeArtifact,
       executionRole: agentRole,
       networkConfiguration: networkConfiguration,
@@ -739,7 +731,6 @@ export class BackendStack extends cdk.NestedStack {
 
     // Load tool specification from JSON file
     const toolSpecPath = path.join(__dirname, "../../gateway/tools/sample_tool/tool_spec.json") // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
-    const apiSpec = JSON.parse(require("fs").readFileSync(toolSpecPath, "utf8"))
 
     // Cognito OAuth2 configuration for gateway
     const cognitoIssuer = `https://cognito-idp.${this.region}.amazonaws.com/${this.userPool.userPoolId}`
@@ -837,54 +828,32 @@ export class BackendStack extends cdk.NestedStack {
     // Store for use in createAgentCoreRuntime()
     this.runtimeCredentialProvider = runtimeCredentialProvider
 
-    // Create Gateway using L1 construct (CfnGateway)
-    // This replaces the Custom Resource approach with native CloudFormation support
-    const gateway = new bedrockagentcore.CfnGateway(this, "AgentCoreGateway", {
-      name: `${config.stack_name_base}-gateway`,
-      roleArn: gatewayRole.roleArn,
-      protocolType: "MCP",
-      protocolConfiguration: {
-        mcp: {
-          supportedVersions: ["2025-03-26"],
-          // Optional: Enable semantic search for tools
-          // searchType: "SEMANTIC",
-        },
-      },
-      authorizerType: "CUSTOM_JWT",
-      authorizerConfiguration: {
-        customJwtAuthorizer: {
-          allowedClients: [this.machineClient.userPoolClientId],
-          discoveryUrl: cognitoDiscoveryUrl,
-        },
-      },
+    // Create Gateway using L2 construct
+    const gateway = new agentcore.Gateway(this, "AgentCoreGateway", {
+      gatewayName: `${config.stack_name_base}-gateway`,
+      role: gatewayRole,
+      protocolConfiguration: new agentcore.McpProtocolConfiguration({
+        supportedVersions: [agentcore.MCPProtocolVersion.MCP_2025_03_26],
+      }),
+      authorizerConfiguration: agentcore.GatewayAuthorizer.usingCustomJwt({
+        discoveryUrl: cognitoDiscoveryUrl,
+        allowedClients: [this.machineClient.userPoolClientId],
+      }),
       description: "AgentCore Gateway with MCP protocol and JWT authentication",
     })
 
-    // Create Gateway Target using L1 construct (CfnGatewayTarget)
-    const gatewayTarget = new bedrockagentcore.CfnGatewayTarget(this, "GatewayTarget", {
-      gatewayIdentifier: gateway.attrGatewayIdentifier,
-      name: "sample-tool-target",
+    // Create Gateway Target using L2 addLambdaTarget().
+    // This grants the gateway role invoke permission and adds the resource-based
+    // Lambda permission the CreateGatewayTarget dry-run validation requires.
+    const gatewayTarget = gateway.addLambdaTarget("GatewayTarget", {
+      gatewayTargetName: "sample-tool-target",
       description: "Sample tool Lambda target",
-      targetConfiguration: {
-        mcp: {
-          lambda: {
-            lambdaArn: toolLambda.functionArn,
-            toolSchema: {
-              inlinePayload: apiSpec,
-            },
-          },
-        },
-      },
-      credentialProviderConfigurations: [
-        {
-          credentialProviderType: "GATEWAY_IAM_ROLE",
-        },
-      ],
+      lambdaFunction: toolLambda,
+      toolSchema: agentcore.ToolSchema.fromLocalAsset(toolSpecPath),
+      // credentialProviderConfigurations defaults to [GatewayCredentialProvider.iamRole()]
     })
 
     // Ensure proper creation order
-    gatewayTarget.addDependency(gateway)
-    gateway.node.addDependency(toolLambda)
     gateway.node.addDependency(this.machineClient)
     gateway.node.addDependency(gatewayRole)
 
@@ -965,15 +934,17 @@ export class BackendStack extends cdk.NestedStack {
     // Grant Lambda permissions to update the Gateway (attach/detach policy engine)
     // and read Gateway configuration for the update_gateway call.
     // iam:PassRole is required because update_gateway re-associates the Gateway's IAM role.
+    // InvokeGateway is required for CreatePolicy/UpdatePolicy: policy validation calls.
     cedarPolicyLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
           "bedrock-agentcore:UpdateGateway",
           "bedrock-agentcore:GetGateway",
+          "bedrock-agentcore:InvokeGateway",
           "bedrock-agentcore:ManageResourceScopedPolicy",
           "bedrock-agentcore:ListGatewayTargets",
         ],
-        resources: [gateway.attrGatewayArn],
+        resources: [gateway.gatewayArn],
       })
     )
 
@@ -1000,12 +971,12 @@ export class BackendStack extends cdk.NestedStack {
       .filter((line: string) => !line.trimStart().startsWith("//"))
       .join("\n")
       .trim()
-      .replaceAll("{{GATEWAY_ARN}}", gateway.attrGatewayArn)
+      .replaceAll("{{GATEWAY_ARN}}", gateway.gatewayArn)
 
     const cedarPolicy = new cdk.CustomResource(this, "GatewayPolicy", {
       serviceToken: cedarPolicyProvider.serviceToken,
       properties: {
-        GatewayIdentifier: gateway.attrGatewayIdentifier,
+        GatewayIdentifier: gateway.gatewayId,
         PolicyDocument: policyDocument,
         // Policy name format: {PolicyEngineName}_cp_{timestamp}
         // The AgentCore API enforces a 48-character limit on policy names.
@@ -1020,28 +991,28 @@ export class BackendStack extends cdk.NestedStack {
     // Store AgentCore Gateway URL in SSM for AgentCore Runtime access
     new ssm.StringParameter(this, "GatewayUrlParam", {
       parameterName: `/${config.stack_name_base}/gateway_url`,
-      stringValue: gateway.attrGatewayUrl,
+      stringValue: gateway.gatewayUrl!,
       description: "AgentCore Gateway URL",
     })
 
     // Output gateway information
     new cdk.CfnOutput(this, "GatewayId", {
-      value: gateway.attrGatewayIdentifier,
+      value: gateway.gatewayId,
       description: "AgentCore Gateway ID",
     })
 
     new cdk.CfnOutput(this, "GatewayUrl", {
-      value: gateway.attrGatewayUrl,
+      value: gateway.gatewayUrl!,
       description: "AgentCore Gateway URL",
     })
 
     new cdk.CfnOutput(this, "GatewayArn", {
-      value: gateway.attrGatewayArn,
+      value: gateway.gatewayArn,
       description: "AgentCore Gateway ARN",
     })
 
     new cdk.CfnOutput(this, "GatewayTargetId", {
-      value: gatewayTarget.ref,
+      value: gatewayTarget.targetId,
       description: "AgentCore Gateway Target ID",
     })
 

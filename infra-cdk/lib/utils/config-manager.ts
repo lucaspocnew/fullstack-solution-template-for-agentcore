@@ -32,6 +32,8 @@ export interface AppConfig {
   backend: {
     pattern: string
     deployment_type: DeploymentType
+    /** Name for the agent runtime. Valid characters: a-z, A-Z, 0-9, _. Defaults to "FASTAgent". */
+    agent_name: string
     /** Network mode for the AgentCore Runtime. Defaults to "PUBLIC". */
     network_mode: NetworkMode
     /** VPC configuration. Required when network_mode is "VPC". */
@@ -141,6 +143,7 @@ export class ConfigManager {
         backend: {
           pattern: parsedConfig.backend?.pattern || "strands-single-agent",
           deployment_type: deploymentType,
+          agent_name: parsedConfig.backend?.agent_name || "FASTAgent",
           network_mode: networkMode,
           vpc: vpcConfig,
           use_long_term_memory: parsedConfig.backend?.use_long_term_memory === true,
