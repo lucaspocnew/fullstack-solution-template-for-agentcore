@@ -2,5 +2,5 @@
 strands-agents==1.42.0
 ag-ui-strands==0.1.9
 bedrock-agentcore==1.14.0
-mcp==1.27.2
+mcp==1.28.1
 PyJWT[crypto]==2.13.0
