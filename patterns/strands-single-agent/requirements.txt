@@ -1,5 +1,5 @@
 # Strands agent dependencies
 strands-agents==1.43.0
 bedrock-agentcore==1.6.1
-mcp==1.28.1
+mcp==1.30.0
 PyJWT[crypto]==2.15.0
